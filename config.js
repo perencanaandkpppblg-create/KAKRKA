@@ -3,4 +3,4 @@
 // Supabase Dashboard -> Project Settings -> API
 // ============================================================
 window.SUPABASE_URL = "https://hexhmtubabxwfdnfosrs.supabase.co/v1";
-window.SUPABASE_ANON_KEY = "sb_secret_-XhaSbUFnMwlSX_UfUJaug_SxB40hHp";
+window.SUPABASE_ANON_KEY = "sb_secret_lnm2YoICY1skgTsaqVO5Tw_JCJizh0k";
