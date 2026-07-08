@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAK · RKA PPEPD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-docx-js/dist/html-docx.js"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+const sb = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+const MONTHS = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des'];
+
+const BLANK_DOC = {
+  sub_kegiatan_nama:'Sub Kegiatan Baru', tahun_anggaran:'2027', bidang_urusan:'', program_text:'',
+  program_indikator:'', kegiatan_text:'', kegiatan_indikator:'', kegiatan_target:'',
+  sub_kegiatan_indikator:'', sub_kegiatan_target:'', sumber_dana:'', alokasi_anggaran:'', lokasi:'',
+  latar_belakang:'', dasar_hukum:[], maksud:'', tujuan:[], analisis_dampak:'', keluaran:'',
+  metode_pelaksanaan:[], tahapan_kegiatan:[], tempat_pelaksanaan:'',
+  pelaksana_kegiatan:'', penanggung_jawab:'', kelompok_sasaran:'', pihak_terkait:'',
+  waktu_pelaksanaan:'', jadwal:[], rincian_belanja:[], mitigasi_risiko:[],
+  tempat_tanggal:'', ttd_pa_jabatan:'Pengguna Anggaran (PA)', ttd_pa_nama:'', ttd_pa_nip:'',
+  ttd_pptk_jabatan:'Penanggung Jawab / PPTK', ttd_pptk_nama:'', ttd_pptk_nip:''
+};
+
+let state = {
+  session:null, authMode:'login', authError:'',
+  bidangList:[], documents:[], openGroups:{},
+  activeDocId:null, activeDoc:null, mode:'edit', // 'edit' | 'preview'
+  toast:''
+};
+
+const $app = document.getElementById('app');
+const esc = (s)=> (s??'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = n => { n = Number(n)||0; return 'Rp ' + n.toLocaleString('id-ID'); };
+
+// ================= AUTH =================
+sb.auth.getSession().then(({data})=>{ state.session = data.session; boot(); });
+sb.auth.onAuthStateChange((_evt, session)=>{ state.session = session; if(session) boot(); else render(); });
+
+async function boot(){
+  await loadBidang();
+  await loadDocuments();
+  render();
+}
+
+async function loadBidang(){
+  const {data, error} = await sb.from('bidang').select('*').order('nama');
+  if(!error) state.bidangList = data || [];
+}
+async function loadDocuments(){
+  const {data, error} = await sb.from('kak_documents').select('*').order('created_at');
+  if(!error) state.documents = data || [];
+}
+
+async function doLogin(email, pass){
+  state.authError='';
+  const {error} = await sb.auth.signInWithPassword({email, password:pass});
+  if(error){ state.authError = error.message; render(); }
+}
+async function doRegister(email, pass){
+  state.authError='';
+  const {error} = await sb.auth.signUp({email, password:pass});
+  if(error){ state.authError = error.message; }
+  else { state.authError = 'Akun dibuat. Silakan cek email untuk verifikasi (jika diaktifkan), lalu masuk.'; state.authMode='login'; }
+  render();
+}
+async function doLogout(){ await sb.auth.signOut(); state.activeDoc=null; state.activeDocId=null; render(); }
+
+// ================= RENDER ROOT =================
+function render(){
+  if(!state.session){ renderAuth(); return; }
+  renderShell();
+}
+
+function renderAuth(){
+  const isLogin = state.authMode==='login';
+  $app.innerHTML = `
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-seal">KAK</div>
+      <h1>${isLogin?'Masuk ke Aplikasi':'Buat Akun Baru'}</h1>
+      <p class="sub">Aplikasi Penyusunan KAK / RKA &middot; Perencanaan, Pengendalian &amp; Evaluasi Pembangunan Daerah</p>
+      ${state.authError?`<div class="auth-error">${esc(state.authError)}</div>`:''}
+      <div class="auth-field"><label>Email</label><input type="email" id="a_email" placeholder="nama@instansi.go.id"></div>
+      <div class="auth-field"><label>Kata Sandi</label><input type="password" id="a_pass" placeholder="••••••••"></div>
+      <div class="auth-actions">
+        <button class="btn btn-primary" id="a_submit">${isLogin?'Masuk':'Daftar'}</button>
+      </div>
+      <div class="auth-toggle">
+        ${isLogin? `Belum punya akun? <a id="a_toggle">Daftar di sini</a>` : `Sudah punya akun? <a id="a_toggle">Masuk di sini</a>`}
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('a_toggle').onclick = ()=>{ state.authMode = isLogin?'register':'login'; state.authError=''; render(); };
+  document.getElementById('a_submit').onclick = ()=>{
+    const email = document.getElementById('a_email').value.trim();
+    const pass = document.getElementById('a_pass').value;
+    if(!email || !pass){ state.authError='Isi email dan kata sandi terlebih dahulu.'; render(); return; }
+    isLogin ? doLogin(email,pass) : doRegister(email,pass);
+  };
+}
+
+function renderShell(){
+  $app.innerHTML = `
+  <div class="app-shell">
+    <div class="topbar">
+      <div class="brand"><span class="mark">KAK</span> KAK &middot; RKA PPEPD</div>
+      <div class="user"><span>${esc(state.session.user.email)}</span><button id="btn_logout">Keluar</button></div>
+    </div>
+    <div class="sidebar" id="sidebar"></div>
+    <div class="main" id="main"></div>
+  </div>`;
+  document.getElementById('btn_logout').onclick = doLogout;
+  renderSidebar();
+  renderMain();
+}
+
+// ================= SIDEBAR =================
+function renderSidebar(){
+  const el = document.getElementById('sidebar');
+  const groups = state.bidangList.map(b=>{
+    const docs = state.documents.filter(d=>d.bidang_id===b.id);
+    const open = state.openGroups[b.id] !== false;
+    return `
+    <div class="bidang-group">
+      <div class="bidang-head" data-toggle="${b.id}">
+        <span>${esc(b.nama)}</span>
+        <span class="count">${docs.length}</span>
+      </div>
+      ${open? `
+      <div class="doc-list">
+        ${docs.map(d=>`
+          <div class="doc-item ${d.id===state.activeDocId?'active':''}" data-open="${d.id}">
+            <span class="dot"></span><span>${esc(d.sub_kegiatan_nama||'(tanpa nama)')}</span>
+          </div>`).join('')}
+        <button class="doc-add-sub" data-newdoc="${b.id}">+ Sub Kegiatan Baru</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <button class="sidebar-add" id="btn_add_bidang">+ Tambah Bidang / SKPD</button>
+    ${groups || '<p style="font-size:12.5px;color:var(--ink-soft);">Belum ada Bidang/SKPD. Tambahkan dahulu.</p>'}
+  `;
+
+  document.getElementById('btn_add_bidang').onclick = async ()=>{
+    const nama = prompt('Nama Bidang / SKPD:');
+    if(!nama) return;
+    const {data, error} = await sb.from('bidang').insert({nama, created_by:state.session.user.id}).select().single();
+    if(error){ alert('Gagal menambah bidang: '+error.message); return; }
+    state.bidangList.push(data); render();
+  };
+  el.querySelectorAll('[data-toggle]').forEach(node=>{
+    node.onclick = ()=>{ const id=node.dataset.toggle; state.openGroups[id] = !(state.openGroups[id]!==false); renderSidebar(); };
+  });
+  el.querySelectorAll('[data-open]').forEach(node=>{
+    node.onclick = ()=> openDoc(node.dataset.open);
+  });
+  el.querySelectorAll('[data-newdoc]').forEach(node=>{
+    node.onclick = ()=> createDoc(node.dataset.newdoc);
+  });
+}
+
+async function createDoc(bidangId){
+  const nama = prompt('Nama Sub Kegiatan:', 'Sub Kegiatan Baru');
+  if(nama===null) return;
+  const payload = {...BLANK_DOC, sub_kegiatan_nama:nama, bidang_id:bidangId, user_id:state.session.user.id};
+  const {data, error} = await sb.from('kak_documents').insert(payload).select().single();
+  if(error){ alert('Gagal membuat dokumen: '+error.message); return; }
+  state.documents.push(data);
+  state.activeDocId = data.id; state.activeDoc = data; state.mode='edit';
+  renderSidebar(); renderMain();
+}
+
+async function openDoc(id){
+  const {data, error} = await sb.from('kak_documents').select('*').eq('id', id).single();
+  if(error){ alert('Gagal memuat dokumen: '+error.message); return; }
+  state.activeDocId = id; state.activeDoc = data; state.mode='edit';
+  renderSidebar(); renderMain();
+}
+
+// ================= MAIN PANEL =================
+function renderMain(){
+  const el = document.getElementById('main');
+  if(!state.activeDoc){
+    el.innerHTML = `<div class="empty-state"><h2>Pilih atau buat Sub Kegiatan</h2><p>Gunakan panel di sebelah kiri untuk memilih dokumen KAK, atau buat Bidang/SKPD dan Sub Kegiatan baru.</p></div>`;
+    return;
+  }
+  if(state.mode==='preview'){ renderPreview(el); }
+  else { renderForm(el); }
+}
+
+function bidangNama(id){ const b = state.bidangList.find(x=>x.id===id); return b? b.nama : ''; }
+
+function renderForm(el){
+  const d = state.activeDoc;
+  const listVal = arr => (arr||[]).join('\n');
+
+  el.innerHTML = `
+    <div class="doc-title-row">
+      <h1>${esc(d.sub_kegiatan_nama || 'Sub Kegiatan')}</h1>
+      <div class="doc-actions">
+        <button class="btn btn-ghost" id="btn_close">Tutup</button>
+        <button class="btn btn-danger" id="btn_delete">Hapus</button>
+        <button class="btn btn-primary" id="btn_save">Simpan Perubahan</button>
+        <button class="btn btn-brass" id="btn_preview">Simpan &amp; Pratinjau / Export</button>
+      </div>
+    </div>
+    <div class="editor">
+      <div class="ledger-rail">
+        <a href="#sec-identitas"><b>I.</b>Identitas</a>
+        <a href="#sec-a"><b>A.</b>Latar Belakang</a>
+        <a href="#sec-b"><b>B.</b>Dasar Hukum</a>
+        <a href="#sec-c"><b>C.</b>Maksud &amp; Tujuan</a>
+        <a href="#sec-d"><b>D.</b>Analisis Dampak</a>
+        <a href="#sec-e"><b>E.</b>Keluaran</a>
+        <a href="#sec-f"><b>F.</b>Pelaksanaan</a>
+        <a href="#sec-g"><b>G.</b>Pelaksana</a>
+        <a href="#sec-h"><b>H.</b>Jadwal &amp; Biaya</a>
+        <a href="#sec-i"><b>I.</b>Mitigasi Risiko</a>
+        <a href="#sec-ttd"><b>&#10003;</b>Tanda Tangan</a>
+      </div>
+      <div class="form-col">
+
+        <div class="section-card" id="sec-identitas">
+          <h3><b>I.</b>Identitas Kegiatan</h3>
+          <div class="field-row">
+            <div class="field"><label>Nama Sub Kegiatan</label><input id="f_sub_kegiatan_nama" value="${esc(d.sub_kegiatan_nama)}"></div>
+            <div class="field"><label>Tahun Anggaran</label><input id="f_tahun_anggaran" value="${esc(d.tahun_anggaran)}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Bidang Urusan / Tugas</label><input id="f_bidang_urusan" value="${esc(d.bidang_urusan)}"></div>
+            <div class="field"><label>Sumber Dana</label><input id="f_sumber_dana" value="${esc(d.sumber_dana)}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Program</label><input id="f_program_text" value="${esc(d.program_text)}"></div>
+            <div class="field"><label>Indikator Program</label><input id="f_program_indikator" value="${esc(d.program_indikator)}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Kegiatan</label><input id="f_kegiatan_text" value="${esc(d.kegiatan_text)}"></div>
+            <div class="field"><label>Indikator Kegiatan</label><input id="f_kegiatan_indikator" value="${esc(d.kegiatan_indikator)}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Target Kegiatan</label><input id="f_kegiatan_target" value="${esc(d.kegiatan_target)}"></div>
+            <div class="field"><label>Indikator Sub Kegiatan</label><input id="f_sub_kegiatan_indikator" value="${esc(d.sub_kegiatan_indikator)}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Target Sub Kegiatan</label><input id="f_sub_kegiatan_target" value="${esc(d.sub_kegiatan_target)}"></div>
+            <div class="field"><label>Alokasi Anggaran</label><input id="f_alokasi_anggaran" value="${esc(d.alokasi_anggaran)}"></div>
+          </div>
+          <div class="field-row single">
+            <div class="field"><label>Lokasi</label><input id="f_lokasi" value="${esc(d.lokasi)}"></div>
+          </div>
+        </div>
+
+        <div class="section-card" id="sec-a">
+          <h3><b>A.</b>Latar Belakang</h3>
+          <div class="field"><textarea id="f_latar_belakang" rows="4">${esc(d.latar_belakang)}</textarea></div>
+        </div>
+
+        <div class="section-card" id="sec-b">
+          <h3><b>B.</b>Dasar Hukum</h3>
+          <div class="field"><label class="hint">Satu dasar hukum per baris</label>
+            <textarea id="f_dasar_hukum" rows="5">${esc(listVal(d.dasar_hukum))}</textarea>
+          </div>
+        </div>
+
+        <div class="section-card" id="sec-c">
+          <h3><b>C.</b>Maksud dan Tujuan</h3>
+          <div class="field" style="margin-bottom:12px;"><label>1. Maksud Kegiatan</label><textarea id="f_maksud" rows="3">${esc(d.maksud)}</textarea></div>
+          <div class="field"><label>2. Tujuan Kegiatan</label><label class="hint">Satu tujuan per baris</label>
+            <textarea id="f_tujuan" rows="4">${esc(listVal(d.tujuan))}</textarea>
+          </div>
+        </div>
+
+        <div class="section-card" id="sec-d">
+          <h3><b>D.</b>Analisis Dampak</h3>
+          <div class="field"><textarea id="f_analisis_dampak" rows="4">${esc(d.analisis_dampak)}</textarea></div>
+        </div>
+
+        <div class="section-card" id="sec-e">
+          <h3><b>E.</b>Keluaran</h3>
+          <div class="field"><textarea id="f_keluaran" rows="4">${esc(d.keluaran)}</textarea></div>
+        </div>
+
+        <div class="section-card" id="sec-f">
+          <h3><b>F.</b>Cara Pelaksanaan Kegiatan</h3>
+          <div class="field" style="margin-bottom:12px;"><label>1. Metode Pelaksanaan</label><label class="hint">Satu poin per baris</label>
+            <textarea id="f_metode_pelaksanaan" rows="4">${esc(listVal(d.metode_pelaksanaan))}</textarea>
+          </div>
+          <div class="field" style="margin-bottom:12px;"><label>2. Tahapan Kegiatan</label><label class="hint">Satu poin per baris</label>
+            <textarea id="f_tahapan_kegiatan" rows="4">${esc(listVal(d.tahapan_kegiatan))}</textarea>
+          </div>
+          <div class="field"><label>3. Tempat Pelaksanaan</label><input id="f_tempat_pelaksanaan" value="${esc(d.tempat_pelaksanaan)}"></div>
+        </div>
+
+        <div class="section-card" id="sec-g">
+          <h3><b>G.</b>Pelaksana dan Penanggung Jawab</h3>
+          <div class="field" style="margin-bottom:12px;"><label>Pelaksana Kegiatan</label><textarea id="f_pelaksana_kegiatan" rows="2">${esc(d.pelaksana_kegiatan)}</textarea></div>
+          <div class="field" style="margin-bottom:12px;"><label>Penanggung Jawab</label><textarea id="f_penanggung_jawab" rows="2">${esc(d.penanggung_jawab)}</textarea></div>
+          <div class="field" style="margin-bottom:12px;"><label>Kelompok Sasaran / Penerima Manfaat</label><textarea id="f_kelompok_sasaran" rows="2">${esc(d.kelompok_sasaran)}</textarea></div>
+          <div class="field"><label>Pihak Terkait</label><input id="f_pihak_terkait" value="${esc(d.pihak_terkait)}"></div>
+        </div>
+
+        <div class="section-card" id="sec-h">
+          <h3><b>H.</b>Jadwal Kegiatan</h3>
+          <div class="field" style="margin-bottom:14px;"><label>1. Waktu Pelaksanaan</label><input id="f_waktu_pelaksanaan" value="${esc(d.waktu_pelaksanaan)}"></div>
+          <label style="font-size:12px;font-weight:600;color:var(--navy);">2. Matriks Pelaksanaan</label>
+          <table class="dyn" id="jadwalTable" style="margin-top:6px;">
+            <thead><tr><th style="min-width:150px;">Tahapan</th>${MONTHS.map(m=>`<th class="chk">${m}</th>`).join('')}<th></th></tr></thead>
+            <tbody id="jadwalBody"></tbody>
+          </table>
+          <button class="add-row-btn" id="btn_add_jadwal">+ Tambah Tahapan</button>
+
+          <label style="font-size:12px;font-weight:600;color:var(--navy);display:block;margin-top:20px;">3. Rincian Belanja dan Biaya</label>
+          <table class="dyn" id="rincianTable" style="margin-top:6px;">
+            <thead><tr><th style="min-width:200px;">Uraian Belanja</th><th style="width:110px;">Volume</th><th style="width:120px;">Total (Rp)</th><th style="width:150px;">Sektor Intervensi</th><th>Keterangan</th><th></th></tr></thead>
+            <tbody id="rincianBody"></tbody>
+          </table>
+          <button class="add-row-btn" id="btn_add_rincian">+ Tambah Rincian Belanja</button>
+          <div class="total-line" id="rincianTotal"></div>
+        </div>
+
+        <div class="section-card" id="sec-i">
+          <h3><b>I.</b>Mitigasi Risiko Kegiatan</h3>
+          <table class="dyn" id="mitigasiTable">
+            <thead><tr><th style="min-width:180px;">Uraian Risiko</th><th style="width:100px;">Tingkat</th><th style="min-width:150px;">Kemungkinan Dampak</th><th>Mitigasi / Rencana Tindak</th><th></th></tr></thead>
+            <tbody id="mitigasiBody"></tbody>
+          </table>
+          <button class="add-row-btn" id="btn_add_mitigasi">+ Tambah Risiko</button>
+        </div>
+
+        <div class="section-card" id="sec-ttd">
+          <h3><b>&#10003;</b>Tanda Tangan</h3>
+          <div class="field" style="margin-bottom:14px;"><label>Tempat, Tanggal</label><input id="f_tempat_tanggal" value="${esc(d.tempat_tanggal)}" placeholder="Contoh: Kabupaten Balangan, 02 Januari 2027"></div>
+          <div class="ttd-grid">
+            <div>
+              <div class="field" style="margin-bottom:10px;"><label>Jabatan Penandatangan 1</label><input id="f_ttd_pa_jabatan" value="${esc(d.ttd_pa_jabatan)}"></div>
+              <div class="field" style="margin-bottom:10px;"><label>Nama</label><input id="f_ttd_pa_nama" value="${esc(d.ttd_pa_nama)}"></div>
+              <div class="field"><label>NIP</label><input id="f_ttd_pa_nip" value="${esc(d.ttd_pa_nip)}"></div>
+            </div>
+            <div>
+              <div class="field" style="margin-bottom:10px;"><label>Jabatan Penandatangan 2</label><input id="f_ttd_pptk_jabatan" value="${esc(d.ttd_pptk_jabatan)}"></div>
+              <div class="field" style="margin-bottom:10px;"><label>Nama</label><input id="f_ttd_pptk_nama" value="${esc(d.ttd_pptk_nama)}"></div>
+              <div class="field"><label>NIP</label><input id="f_ttd_pptk_nip" value="${esc(d.ttd_pptk_nip)}"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  `;
+
+  renderJadwalTable(d.jadwal||[]);
+  renderRincianTable(d.rincian_belanja||[]);
+  renderMitigasiTable(d.mitigasi_risiko||[]);
+
+  document.getElementById('btn_close').onclick = ()=>{ state.activeDoc=null; state.activeDocId=null; renderSidebar(); renderMain(); };
+  document.getElementById('btn_delete').onclick = deleteActiveDoc;
+  document.getElementById('btn_save').onclick = ()=> saveActiveDoc(false);
+  document.getElementById('btn_preview').onclick = ()=> saveActiveDoc(true);
+  document.getElementById('btn_add_jadwal').onclick = ()=>{
+    const arr = readJadwalFromDOM(); arr.push({tahapan:'', bulan:new Array(12).fill(false)}); renderJadwalTable(arr);
+  };
+  document.getElementById('btn_add_rincian').onclick = ()=>{
+    const arr = readRincianFromDOM(); arr.push({uraian:'', volume:'', total:'', sektor:'', keterangan:''}); renderRincianTable(arr);
+  };
+  document.getElementById('btn_add_mitigasi').onclick = ()=>{
+    const arr = readMitigasiFromDOM(); arr.push({uraian:'', tingkat:'Sedang', dampak:'', mitigasi:''}); renderMitigasiTable(arr);
+  };
+}
+
+// ---------- dynamic table: jadwal ----------
+function renderJadwalTable(arr){
+  const body = document.getElementById('jadwalBody');
+  body.innerHTML = arr.map((row,i)=>`
+    <tr>
+      <td><input data-f="tahapan" value="${esc(row.tahapan)}"></td>
+      ${MONTHS.map((_,mi)=>`<td class="chk"><input type="checkbox" data-m="${mi}" ${row.bulan && row.bulan[mi]?'checked':''}></td>`).join('')}
+      <td class="rm"><button class="rm-btn" data-rm="${i}">&times;</button></td>
+    </tr>`).join('');
+  body.querySelectorAll('[data-rm]').forEach(btn=>{
+    btn.onclick = ()=>{ const arr2 = readJadwalFromDOM(); arr2.splice(Number(btn.dataset.rm),1); renderJadwalTable(arr2); };
+  });
+}
+function readJadwalFromDOM(){
+  const rows = [...document.querySelectorAll('#jadwalBody tr')];
+  return rows.map(tr=>{
+    const tahapan = tr.querySelector('[data-f="tahapan"]').value;
+    const bulan = [...tr.querySelectorAll('[data-m]')].map(cb=>cb.checked);
+    return {tahapan, bulan};
+  });
+}
+
+// ---------- dynamic table: rincian belanja ----------
+function renderRincianTable(arr){
+  const body = document.getElementById('rincianBody');
+  body.innerHTML = arr.map((row,i)=>`
+    <tr>
+      <td><input data-f="uraian" value="${esc(row.uraian)}"></td>
+      <td><input data-f="volume" value="${esc(row.volume)}"></td>
+      <td><input data-f="total" data-numeric value="${esc(row.total)}"></td>
+      <td><input data-f="sektor" value="${esc(row.sektor)}"></td>
+      <td><input data-f="keterangan" value="${esc(row.keterangan)}"></td>
+      <td class="rm"><button class="rm-btn" data-rm="${i}">&times;</button></td>
+    </tr>`).join('');
+  body.querySelectorAll('[data-rm]').forEach(btn=>{
+    btn.onclick = ()=>{ const arr2 = readRincianFromDOM(); arr2.splice(Number(btn.dataset.rm),1); renderRincianTable(arr2); };
+  });
+  body.querySelectorAll('[data-numeric]').forEach(inp=>{
+    inp.addEventListener('input', updateRincianTotal);
+  });
+  updateRincianTotal();
+}
+function readRincianFromDOM(){
+  const rows = [...document.querySelectorAll('#rincianBody tr')];
+  return rows.map(tr=>({
+    uraian: tr.querySelector('[data-f="uraian"]').value,
+    volume: tr.querySelector('[data-f="volume"]').value,
+    total: tr.querySelector('[data-f="total"]').value,
+    sektor: tr.querySelector('[data-f="sektor"]').value,
+    keterangan: tr.querySelector('[data-f="keterangan"]').value,
+  }));
+}
+function updateRincianTotal(){
+  const arr = readRincianFromDOM();
+  const sum = arr.reduce((s,r)=> s + (Number(r.total)||0), 0);
+  const totalEl = document.getElementById('rincianTotal');
+  if(totalEl) totalEl.textContent = 'Total: ' + money(sum);
+}
+
+// ---------- dynamic table: mitigasi risiko ----------
+function renderMitigasiTable(arr){
+  const body = document.getElementById('mitigasiBody');
+  body.innerHTML = arr.map((row,i)=>`
+    <tr>
+      <td><input data-f="uraian" value="${esc(row.uraian)}"></td>
+      <td><select data-f="tingkat">
+        ${['Rendah','Sedang','Tinggi'].map(t=>`<option ${row.tingkat===t?'selected':''}>${t}</option>`).join('')}
+      </select></td>
+      <td><input data-f="dampak" value="${esc(row.dampak)}"></td>
+      <td><input data-f="mitigasi" value="${esc(row.mitigasi)}"></td>
+      <td class="rm"><button class="rm-btn" data-rm="${i}">&times;</button></td>
+    </tr>`).join('');
+  body.querySelectorAll('[data-rm]').forEach(btn=>{
+    btn.onclick = ()=>{ const arr2 = readMitigasiFromDOM(); arr2.splice(Number(btn.dataset.rm),1); renderMitigasiTable(arr2); };
+  });
+}
+function readMitigasiFromDOM(){
+  const rows = [...document.querySelectorAll('#mitigasiBody tr')];
+  return rows.map(tr=>({
+    uraian: tr.querySelector('[data-f="uraian"]').value,
+    tingkat: tr.querySelector('[data-f="tingkat"]').value,
+    dampak: tr.querySelector('[data-f="dampak"]').value,
+    mitigasi: tr.querySelector('[data-f="mitigasi"]').value,
+  }));
+}
+
+// ================= GATHER / SAVE / DELETE =================
+function splitLines(v){ return v.split('\n').map(s=>s.trim()).filter(Boolean); }
+function val(id){ const n = document.getElementById(id); return n ? n.value : ''; }
+
+function gatherFormData(){
+  return {
+    sub_kegiatan_nama: val('f_sub_kegiatan_nama'),
+    tahun_anggaran: val('f_tahun_anggaran'),
+    bidang_urusan: val('f_bidang_urusan'),
+    program_text: val('f_program_text'),
+    program_indikator: val('f_program_indikator'),
+    kegiatan_text: val('f_kegiatan_text'),
+    kegiatan_indikator: val('f_kegiatan_indikator'),
+    kegiatan_target: val('f_kegiatan_target'),
+    sub_kegiatan_indikator: val('f_sub_kegiatan_indikator'),
+    sub_kegiatan_target: val('f_sub_kegiatan_target'),
+    sumber_dana: val('f_sumber_dana'),
+    alokasi_anggaran: val('f_alokasi_anggaran'),
+    lokasi: val('f_lokasi'),
+    latar_belakang: val('f_latar_belakang'),
+    dasar_hukum: splitLines(val('f_dasar_hukum')),
+    maksud: val('f_maksud'),
+    tujuan: splitLines(val('f_tujuan')),
+    analisis_dampak: val('f_analisis_dampak'),
+    keluaran: val('f_keluaran'),
+    metode_pelaksanaan: splitLines(val('f_metode_pelaksanaan')),
+    tahapan_kegiatan: splitLines(val('f_tahapan_kegiatan')),
+    tempat_pelaksanaan: val('f_tempat_pelaksanaan'),
+    pelaksana_kegiatan: val('f_pelaksana_kegiatan'),
+    penanggung_jawab: val('f_penanggung_jawab'),
+    kelompok_sasaran: val('f_kelompok_sasaran'),
+    pihak_terkait: val('f_pihak_terkait'),
+    waktu_pelaksanaan: val('f_waktu_pelaksanaan'),
+    jadwal: readJadwalFromDOM(),
+    rincian_belanja: readRincianFromDOM(),
+    mitigasi_risiko: readMitigasiFromDOM(),
+    tempat_tanggal: val('f_tempat_tanggal'),
+    ttd_pa_jabatan: val('f_ttd_pa_jabatan'),
+    ttd_pa_nama: val('f_ttd_pa_nama'),
+    ttd_pa_nip: val('f_ttd_pa_nip'),
+    ttd_pptk_jabatan: val('f_ttd_pptk_jabatan'),
+    ttd_pptk_nama: val('f_ttd_pptk_nama'),
+    ttd_pptk_nip: val('f_ttd_pptk_nip'),
+  };
+}
+
+async function saveActiveDoc(goPreview){
+  const data = gatherFormData();
+  const {data:updated, error} = await sb.from('kak_documents').update(data).eq('id', state.activeDocId).select().single();
+  if(error){ alert('Gagal menyimpan: '+error.message); return; }
+  state.activeDoc = updated;
+  const idx = state.documents.findIndex(x=>x.id===updated.id);
+  if(idx>-1) state.documents[idx] = updated;
+  state.mode = goPreview ? 'preview' : 'edit';
+  renderSidebar(); renderMain();
+}
+
+async function deleteActiveDoc(){
+  if(!confirm('Hapus dokumen "'+state.activeDoc.sub_kegiatan_nama+'" secara permanen?')) return;
+  const {error} = await sb.from('kak_documents').delete().eq('id', state.activeDocId);
+  if(error){ alert('Gagal menghapus: '+error.message); return; }
+  state.documents = state.documents.filter(x=>x.id!==state.activeDocId);
+  state.activeDoc=null; state.activeDocId=null;
+  renderSidebar(); renderMain();
+}
+
+// ================= PREVIEW / EXPORT =================
+function renderPreview(el){
+  const d = state.activeDoc;
+  el.innerHTML = `
+    <div class="doc-title-row">
+      <h1>${esc(d.sub_kegiatan_nama)}</h1>
+      <div class="doc-actions">
+        <button class="btn btn-ghost" id="btn_back_edit">&larr; Kembali Edit</button>
+        <button class="btn btn-ghost" id="btn_export_pdf">Export PDF</button>
+        <button class="btn btn-brass" id="btn_export_docx">Export Word (.docx)</button>
+      </div>
+    </div>
+    <div class="doc-page" id="docPage">${documentHTML(d)}</div>
+  `;
+  document.getElementById('btn_back_edit').onclick = ()=>{ state.mode='edit'; renderMain(); };
+  document.getElementById('btn_export_pdf').onclick = ()=> exportPDF(d);
+  document.getElementById('btn_export_docx').onclick = ()=> exportDOCX(d);
+}
+
+function documentHTML(d){
+  const bidang = bidangNama(d.bidang_id);
+  const jadwalRows = (d.jadwal||[]).map(r=>`
+    <tr><td>${esc(r.tahapan)}</td>${(r.bulan||new Array(12).fill(false)).map(v=>`<td class="c">${v?'&#10003;':''}</td>`).join('')}</tr>
+  `).join('');
+  const rincianRows = (d.rincian_belanja||[]).map(r=>`
+    <tr><td>${esc(r.uraian)}</td><td class="c">${esc(r.volume)}</td><td class="c">${money(r.total)}</td><td>${esc(r.sektor)}</td><td>${esc(r.keterangan)}</td></tr>
+  `).join('');
+  const totalBelanja = (d.rincian_belanja||[]).reduce((s,r)=>s+(Number(r.total)||0),0);
+  const mitigasiRows = (d.mitigasi_risiko||[]).map(r=>`
+    <tr><td>${esc(r.uraian)}</td><td class="c">${esc(r.tingkat)}</td><td>${esc(r.dampak)}</td><td>${esc(r.mitigasi)}</td></tr>
+  `).join('');
+  const ul = arr => `<ul>${(arr||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  const ol = arr => `<ol>${(arr||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`;
+
+  return `
+    <h2 class="title">KERANGKA ACUAN KERJA (KAK) / TERM OF REFERENCE (TOR)</h2>
+    <p class="center"><b>Sub Kegiatan ${esc(d.sub_kegiatan_nama)}</b></p>
+    <p class="center">${esc(bidang)} &middot; Tahun Anggaran ${esc(d.tahun_anggaran)}</p>
+    <hr>
+    <h3 class="sec">I. IDENTITAS KEGIATAN</h3>
+    <table class="idt">
+      <tr><td class="k">Bidang Urusan / Tugas</td><td>${esc(d.bidang_urusan)}</td></tr>
+      <tr><td class="k">Program, Indikator, Target</td><td>${esc(d.program_text)}<br>Indikator: ${esc(d.program_indikator)}</td></tr>
+      <tr><td class="k">Kegiatan, Indikator, Target</td><td>${esc(d.kegiatan_text)}<br>Indikator: ${esc(d.kegiatan_indikator)}<br>Target: ${esc(d.kegiatan_target)}</td></tr>
+      <tr><td class="k">Sub Kegiatan, Indikator, Target</td><td>${esc(d.sub_kegiatan_nama)}<br>Indikator: ${esc(d.sub_kegiatan_indikator)}<br>Target: ${esc(d.sub_kegiatan_target)}</td></tr>
+      <tr><td class="k">Sumber Dana</td><td>${esc(d.sumber_dana)}</td></tr>
+      <tr><td class="k">Alokasi Anggaran ${esc(d.tahun_anggaran)}</td><td>${esc(d.alokasi_anggaran)}</td></tr>
+      <tr><td class="k">Lokasi</td><td>${esc(d.lokasi)}</td></tr>
+    </table>
+
+    <h3 class="sec">A. LATAR BELAKANG</h3><p class="body-text">${esc(d.latar_belakang)}</p>
+    <h3 class="sec">B. DASAR HUKUM</h3>${ul(d.dasar_hukum)}
+    <h3 class="sec">C. MAKSUD DAN TUJUAN</h3>
+    <p class="body-text"><b>1. Maksud Kegiatan</b><br>${esc(d.maksud)}</p>
+    <p class="body-text"><b>2. Tujuan Kegiatan</b></p>${ul(d.tujuan)}
+    <h3 class="sec">D. ANALISIS DAMPAK</h3><p class="body-text">${esc(d.analisis_dampak)}</p>
+    <h3 class="sec">E. KELUARAN</h3><p class="body-text">${esc(d.keluaran)}</p>
+
+    <h3 class="sec">F. CARA PELAKSANAAN KEGIATAN</h3>
+    <p class="body-text"><b>1. Metode Pelaksanaan</b></p>${ul(d.metode_pelaksanaan)}
+    <p class="body-text"><b>2. Tahapan Kegiatan</b></p>${ol(d.tahapan_kegiatan)}
+    <p class="body-text"><b>3. Tempat Pelaksanaan Kegiatan</b><br>${esc(d.tempat_pelaksanaan)}</p>
+
+    <h3 class="sec">G. PELAKSANA DAN PENANGGUNG JAWAB KEGIATAN</h3>
+    <p class="body-text"><b>Pelaksana Kegiatan</b><br>${esc(d.pelaksana_kegiatan)}</p>
+    <p class="body-text"><b>Penanggung Jawab</b><br>${esc(d.penanggung_jawab)}</p>
+    <p class="body-text"><b>Kelompok Sasaran / Penerima Manfaat</b><br>${esc(d.kelompok_sasaran)}</p>
+    <p class="body-text"><b>Pihak Terkait</b><br>${esc(d.pihak_terkait)}</p>
+
+    <h3 class="sec">H. JADWAL KEGIATAN</h3>
+    <p class="body-text"><b>1. Waktu Pelaksanaan Kegiatan</b><br>${esc(d.waktu_pelaksanaan)}</p>
+    <p class="body-text"><b>2. Matriks Pelaksanaan Kegiatan</b></p>
+    <table class="grid">
+      <tr><th>Tahapan Kegiatan</th>${MONTHS.map(m=>`<th>${m}</th>`).join('')}</tr>
+      ${jadwalRows}
+    </table>
+    <p class="body-text"><b>3. Rincian Belanja dan Biaya yang Diperlukan</b></p>
+    <table class="grid">
+      <tr><th>Rincian Belanja</th><th>Volume</th><th>Total Anggaran</th><th>Sektor Intervensi</th><th>Keterangan</th></tr>
+      ${rincianRows}
+      <tr><td colspan="2"><b>Total</b></td><td class="c"><b>${money(totalBelanja)}</b></td><td colspan="2"></td></tr>
+    </table>
+
+    <h3 class="sec">I. MITIGASI RISIKO KEGIATAN</h3>
+    <table class="grid">
+      <tr><th>Uraian Risiko</th><th>Tingkat</th><th>Kemungkinan Dampak</th><th>Mitigasi / Rencana Tindak Pengendalian</th></tr>
+      ${mitigasiRows}
+    </table>
+
+    <p class="place-date">${esc(d.tempat_tanggal)}</p>
+    <div class="sign-grid">
+      <div class="sign-col">
+        Mengetahui / Menyetujui<br>${esc(d.ttd_pa_jabatan)}
+        <div class="sign-space"></div>
+        <div class="sign-name">( ${esc(d.ttd_pa_nama) || '.'.repeat(30)} )</div>
+        <div>NIP. ${esc(d.ttd_pa_nip) || '.'.repeat(20)}</div>
+      </div>
+      <div class="sign-col">
+        ${esc(d.ttd_pptk_jabatan)}
+        <div class="sign-space"></div>
+        <div class="sign-name">( ${esc(d.ttd_pptk_nama) || '.'.repeat(30)} )</div>
+        <div>NIP. ${esc(d.ttd_pptk_nip) || '.'.repeat(20)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function exportPDF(d){
+  const el = document.getElementById('docPage');
+  const opt = {
+    margin: 10,
+    filename: `KAK_${(d.sub_kegiatan_nama||'dokumen').replace(/[^a-z0-9]+/gi,'_')}.pdf`,
+    image:{type:'jpeg', quality:0.98},
+    html2canvas:{scale:2, useCORS:true},
+    jsPDF:{unit:'mm', format:'a4', orientation:'portrait'}
+  };
+  window.html2pdf().set(opt).from(el).save();
+}
+
+function exportDOCX(d){
+  const bodyHtml = documentHTML(d);
+  const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:Georgia,serif;font-size:12pt;color:#111;}
+    h2.title{text-align:center;font-size:14pt;} p.center{text-align:center;margin:2px 0;font-size:11pt;}
+    table{width:100%;border-collapse:collapse;} td,th{border:1px solid #333;padding:5px 8px;font-size:10.5pt;}
+    td.k{width:34%;font-weight:bold;background:#F5F5F3;} h3.sec{text-decoration:underline;font-size:11.5pt;}
+    .sign-grid{width:100%;} table.grid th{background:#F5F5F3;text-align:center;} .c{text-align:center;}
+  </style></head><body>${bodyHtml}</body></html>`;
+  const blob = window.htmlDocx.asBlob(fullHtml);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `KAK_${(d.sub_kegiatan_nama||'dokumen').replace(/[^a-z0-9]+/gi,'_')}.docx`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+render();
+</script>
+</body>
+</html>
